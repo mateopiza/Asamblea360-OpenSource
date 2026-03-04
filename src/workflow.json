@@ -1,0 +1,988 @@
+{
+  "updatedAt": "2026-02-22T00:49:42.534Z",
+  "createdAt": "2026-02-21T23:26:56.726Z",
+  "id": "GTpxmCLOJPbE7DYK",
+  "name": "VERA V6 — AI Agent Nativo + Redis Lock",
+  "description": null,
+  "active": true,
+  "isArchived": false,
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "vera/whatsapp",
+        "responseMode": "responseNode",
+        "options": {
+          "allowedOrigins": "*"
+        }
+      },
+      "id": "n001",
+      "name": "Webhook WhatsApp",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        144,
+        512
+      ],
+      "webhookId": "vera-whatsapp-v6"
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ \"status\": \"ok\" }}",
+        "options": {}
+      },
+      "id": "n002",
+      "name": "ACK 200",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        384,
+        304
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ─── PARSEAR MENSAJE BAILEYS ───\nconst raw = $input.first().json;\nconst messages = raw.messages || [];\nif (!messages.length) return [{ json: { _skip: true } }];\n\nconst msg = messages[0];\nconst key = msg.key || {};\nconst message = msg.message || {};\n\nlet telefono = (key.remoteJid || '').replace('@s.whatsapp.net','').replace('@g.us','');\n// No normalizar si es sesión webchat\nif (!telefono.startsWith('webchat_')) {\n  if (telefono.startsWith('+57'))  telefono = telefono.slice(3);\n  if (telefono.startsWith('57') && telefono.length === 12) telefono = telefono.slice(2);\n}\n\nlet texto = '';\nlet es_audio = false;\nif (message.conversation)                                       texto = message.conversation.trim();\nelse if (message.extendedTextMessage?.text)                     texto = message.extendedTextMessage.text.trim();\nelse if (message.buttonsResponseMessage?.selectedButtonId)      texto = message.buttonsResponseMessage.selectedButtonId.trim();\nelse if (message.listResponseMessage?.singleSelectReply?.selectedRowId) texto = message.listResponseMessage.singleSelectReply.selectedRowId.trim();\nelse if (message.audioMessage || message.pttMessage)            { es_audio = true; texto = '[AUDIO]'; }\nelse if (message.imageMessage)                                  texto = '[IMAGEN]';\nelse if (message.documentMessage)                               texto = '[DOCUMENTO]';\n\nconst es_propio = key.fromMe === true;\nconst es_grupo  = (key.remoteJid || '').includes('@g.us');\n\nif (!telefono || es_propio || es_grupo || !texto) {\n  return [{ json: { _skip: true } }];\n}\n\nreturn [{ json: { telefono, texto_usuario: texto, es_audio, timestamp: new Date().toISOString() } }];"
+      },
+      "id": "n003",
+      "name": "Parse Baileys",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        384,
+        512
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "condition_skip",
+              "leftValue": "={{ $json._skip }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals",
+                "name": "filter.operator.equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "n004",
+      "name": "Filtro Base",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        560,
+        512
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "return [{ json: { ignorado: true } }];"
+      },
+      "id": "n005",
+      "name": "Skip",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        768,
+        304
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ─── REDIS LOCK VIA HTTP (usando n8n fetch) ───\nconst item = $input.first().json;\nconst telefono = item.telefono;\nconst SB_URL = $vars.SUPABASE_URL;\nconst SB_KEY = $vars.SUPABASE_SERVICE_KEY;\nconst hdrs = { 'apikey': SB_KEY, 'Authorization': `Bearer ${SB_KEY}`, 'Content-Type': 'application/json' };\n\n// Usar Supabase como lock store (pragmatico, funciona en Code nodes)\ntry {\n  // Verificar si hay lock activo (menos de 30 segundos)\n  const r = await fetch(\n    `${SB_URL}/rest/v1/vera_locks?telefono=eq.${encodeURIComponent(telefono)}&select=id,created_at`,\n    { headers: { 'apikey': SB_KEY, 'Authorization': `Bearer ${SB_KEY}` } }\n  );\n  const locks = await r.json();\n  \n  if (Array.isArray(locks) && locks.length > 0) {\n    const lockAge = Date.now() - new Date(locks[0].created_at).getTime();\n    if (lockAge < 30000) {\n      return [{ json: { ...item, _locked: true } }];\n    }\n    // Lock expirado, eliminarlo\n    await fetch(\n      `${SB_URL}/rest/v1/vera_locks?telefono=eq.${encodeURIComponent(telefono)}`,\n      { method: 'DELETE', headers: hdrs }\n    );\n  }\n  \n  // Adquirir lock\n  await fetch(`${SB_URL}/rest/v1/vera_locks`, {\n    method: 'POST',\n    headers: { ...hdrs, 'Prefer': 'return=minimal' },\n    body: JSON.stringify({ telefono, created_at: new Date().toISOString() })\n  });\n  \n  return [{ json: { ...item, _locked: false } }];\n} catch(e) {\n  // Si falla el lock, continuar sin lock\n  return [{ json: { ...item, _locked: false } }];\n}"
+      },
+      "id": "n006",
+      "name": "🔒 Redis Lock",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        768,
+        512
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "condition_locked",
+              "leftValue": "={{ $json._locked }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals",
+                "name": "filter.operator.equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "n007",
+      "name": "❓ IF Locked",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        944,
+        512
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ─── ENVIAR AVISO LOCK + RELEASE ───\nconst item = $input.first().json;\nconst BAILEYS_URL = $vars.BAILEYS_URL || 'http://localhost:3006';\nconst SB_URL = $vars.SUPABASE_URL;\nconst SB_KEY = $vars.SUPABASE_SERVICE_KEY;\nconst telWA = item.telefono.startsWith('57') ? item.telefono : `57${item.telefono}`;\nconst jid = `${telWA}@s.whatsapp.net`;\n\ntry {\n  if (!item.telefono.startsWith('webchat_')) await fetch(`${BAILEYS_URL}/send`, {\n    method: 'POST',\n    headers: { 'Content-Type': 'application/json' },\n    body: JSON.stringify({ phone: jid, message: 'Estoy procesando tu mensaje anterior, dame un momento.' })\n  });\n} catch(e) { console.error('Error aviso lock:', e.message); }\n\nreturn [{ json: { _skip: true, _locked_skip: true } }];"
+      },
+      "id": "n008",
+      "name": "💬 Aviso Lock",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1152,
+        304
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ─── RATE LIMITER VIA SUPABASE ───\nconst item = $input.first().json;\nconst telefono = item.telefono;\nconst SB_URL = $vars.SUPABASE_URL;\nconst SB_KEY = $vars.SUPABASE_SERVICE_KEY;\nconst hdrs = { 'apikey': SB_KEY, 'Authorization': `Bearer ${SB_KEY}` };\n\nconst unMinutoAtras = new Date(Date.now() - 60000).toISOString();\nconst telBD = telefono.startsWith('webchat_') ? `+${telefono}` : (telefono.startsWith('57') ? `+${telefono}` : `+57${telefono}`);\n\ntry {\n  const r = await fetch(`${SB_URL}/rest/v1/conversaciones_whatsapp?telefono=eq.${encodeURIComponent(telBD)}&rol=eq.user&created_at=gte.${unMinutoAtras}&select=id`, { headers: hdrs });\n  const msgs = await r.json();\n  if (Array.isArray(msgs) && msgs.length > 10) {\n    return [{ json: { ...item, _rate_limited: true } }];\n  }\n} catch(e) { /* Si falla rate limit check, continuar */ }\n\nreturn [{ json: { ...item, _rate_limited: false } }];"
+      },
+      "id": "n009",
+      "name": "🛡️ Rate Limit",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1152,
+        512
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "condition_rate_limited",
+              "leftValue": "={{ $json._rate_limited }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "n010",
+      "name": "❓ IF Rate Limited",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1328,
+        512
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ─── ENVIAR AVISO RATE LIMIT + RELEASE LOCK ───\nconst item = $input.first().json;\nconst BAILEYS_URL = $vars.BAILEYS_URL || 'http://localhost:3006';\nconst SB_URL = $vars.SUPABASE_URL;\nconst SB_KEY = $vars.SUPABASE_SERVICE_KEY;\nconst telWA = item.telefono.startsWith('57') ? item.telefono : `57${item.telefono}`;\nconst jid = `${telWA}@s.whatsapp.net`;\n\ntry {\n  if (!item.telefono.startsWith('webchat_')) await fetch(`${BAILEYS_URL}/send`, {\n    method: 'POST',\n    headers: { 'Content-Type': 'application/json' },\n    body: JSON.stringify({ phone: jid, message: 'Estas enviando mensajes muy rapido. Espera un momento antes de continuar.' })\n  });\n} catch(e) { console.error('Error rate limit msg:', e.message); }\n\n// Release lock\ntry {\n  await fetch(\n    `${SB_URL}/rest/v1/vera_locks?telefono=eq.${encodeURIComponent(item.telefono)}`,\n    { method: 'DELETE', headers: { 'apikey': SB_KEY, 'Authorization': `Bearer ${SB_KEY}`, 'Content-Type': 'application/json' } }\n  );\n} catch(e) {}\n\nreturn [{ json: { _skip: true, _rate_limited: true } }];"
+      },
+      "id": "n011",
+      "name": "⚠️ Aviso Rate Limit",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1520,
+        304
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "condition_es_audio",
+              "leftValue": "={{ $json.es_audio }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "n012",
+      "name": "🎤 Audio Check",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1520,
+        512
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ─── ENVIAR AVISO AUDIO + RELEASE LOCK ───\nconst item = $input.first().json;\nconst BAILEYS_URL = $vars.BAILEYS_URL || 'http://localhost:3006';\nconst SB_URL = $vars.SUPABASE_URL;\nconst SB_KEY = $vars.SUPABASE_SERVICE_KEY;\nconst telWA = item.telefono.startsWith('57') ? item.telefono : `57${item.telefono}`;\nconst jid = `${telWA}@s.whatsapp.net`;\n\ntry {\n  if (!item.telefono.startsWith('webchat_')) await fetch(`${BAILEYS_URL}/send`, {\n    method: 'POST',\n    headers: { 'Content-Type': 'application/json' },\n    body: JSON.stringify({ phone: jid, message: 'Para continuar necesito que escribas tu mensaje. No puedo procesar audios.' })\n  });\n} catch(e) { console.error('Error audio msg:', e.message); }\n\n// Release lock\ntry {\n  await fetch(\n    `${SB_URL}/rest/v1/vera_locks?telefono=eq.${encodeURIComponent(item.telefono)}`,\n    { method: 'DELETE', headers: { 'apikey': SB_KEY, 'Authorization': `Bearer ${SB_KEY}`, 'Content-Type': 'application/json' } }\n  );\n} catch(e) {}\n\nreturn [{ json: { _skip: true, _audio_skip: true } }];"
+      },
+      "id": "n013",
+      "name": "💬 Aviso Audio",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1728,
+        304
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ─── CARGAR CONTEXTO COMPLETO + HISTORIAL DESDE SUPABASE ───\nconst item     = $input.first().json;\nconst telefono = item.telefono;\nconst SB_URL   = $vars.SUPABASE_URL;\nconst SB_KEY   = $vars.SUPABASE_SERVICE_KEY;\nconst telBD    = telefono.startsWith('webchat_') ? `+${telefono}` : (telefono.startsWith('57') ? `+${telefono}` : `+57${telefono}`);\n\nconst hdrs = { 'apikey': SB_KEY, 'Authorization': `Bearer ${SB_KEY}` };\n\nconst CTX_VACIO = {\n  numero_en_base:false, propietario_bloqueado:false, habeas_data_aceptado:false,\n  primera_vez:true, nombre_usuario:null, tipo_usuario:null, es_delegado:false,\n  nombre_unidad:null, coeficiente:null, nombre_edificio:null, correo_registrado:null,\n  datos_faltantes:[], acreditacion_estado:'sin_acreditar', delegacion_pendiente:false,\n  qr_generado:false, qr_escaneado:false, fecha_asamblea:null, hora_asamblea:null,\n  nombre_asamblea:null, estado_asamblea:null, url_documentacion:null,\n  asamblea_id:null, participante_id:null,\n  votacion_activa:false, pregunta_actual_texto:null, pregunta_actual_id:null,\n  opciones_voto:null, tipo_calculo:null, tiempo_restante_min:null, ya_voto_pregunta_actual:false\n};\n\ntry {\n  // 1. Contexto del usuario\n  const r1 = await fetch(`${SB_URL}/rest/v1/contexto_usuario_whatsapp?telefono=eq.${encodeURIComponent(telBD)}&limit=1`, { headers: hdrs });\n  const [ctx] = await r1.json();\n\n  // 2. Historial (ultimos 8 mensajes, truncar a 2000 chars)\n  const r2 = await fetch(`${SB_URL}/rest/v1/conversaciones_whatsapp?telefono=eq.${encodeURIComponent(telBD)}&order=created_at.desc&limit=8`, { headers: hdrs });\n  const hist = await r2.json();\n  const memoria_raw = Array.isArray(hist)\n    ? hist.reverse().map(m => `${m.rol==='user'?'Usuario':'VERA'}: ${m.contenido}`).join('\\n')\n    : 'Sin historial previo.';\n  const memoria = memoria_raw.length > 2000 ? memoria_raw.slice(-2000) : memoria_raw;\n\n  if (!ctx) {\n    return [{ json: { telefono, texto_usuario: item.texto_usuario, es_audio: item.es_audio, memoria_conversacion: memoria, contexto: { ...CTX_VACIO } } }];\n  }\n\n  // 3. Votacion activa\n  let votacion_activa=false, pregunta_actual_texto=null, pregunta_actual_id=null;\n  let opciones_voto=null, tipo_calculo=null, tiempo_restante_min=null, ya_voto_pregunta_actual=false;\n\n  if (ctx.estado_asamblea === 'EN_CURSO' && ctx.qr_escaneado) {\n    const r3 = await fetch(`${SB_URL}/rest/v1/preguntas?asamblea_id=eq.${ctx.asamblea_id}&estado=eq.Activa&limit=1`, { headers: hdrs });\n    const [preg] = await r3.json();\n    if (preg) {\n      votacion_activa=true; pregunta_actual_texto=preg.texto; pregunta_actual_id=preg.id;\n      opciones_voto=(preg.opciones_json||[]).join(' / '); tipo_calculo=preg.tipo_calculo||'coeficiente';\n      if (preg.fecha_cierre_ronda) {\n        tiempo_restante_min = Math.max(0, Math.round((new Date(preg.fecha_cierre_ronda)-new Date())/60000));\n      }\n      const r4 = await fetch(`${SB_URL}/rest/v1/votos?participante_id=eq.${ctx.participante_id}&pregunta_id=eq.${preg.id}&limit=1`, { headers: hdrs });\n      const [vEx] = await r4.json();\n      ya_voto_pregunta_actual = !!vEx;\n    }\n  }\n\n  return [{ json: {\n    telefono, texto_usuario: item.texto_usuario, es_audio: item.es_audio,\n    memoria_conversacion: memoria,\n    contexto: {\n      numero_en_base: true,\n      propietario_bloqueado:   ctx.propietario_bloqueado  || false,\n      habeas_data_aceptado:    ctx.habeas_data_aceptado   || false,\n      primera_vez:             ctx.primera_vez            || false,\n      nombre_usuario:          ctx.nombre_usuario,\n      tipo_usuario:            ctx.tipo_usuario,\n      es_delegado:             ctx.tipo_usuario === 'delegado',\n      nombre_unidad:           ctx.nombre_unidad,\n      coeficiente:             ctx.coeficiente,\n      nombre_edificio:         ctx.nombre_edificio,\n      correo_registrado:       ctx.email_acreditacion,\n      datos_faltantes:         ctx.datos_faltantes || [],\n      acreditacion_estado:     ctx.acreditacion_estado || 'sin_acreditar',\n      delegacion_pendiente:    ctx.delegacion_pendiente   || false,\n      qr_generado:             ctx.qr_generado            || false,\n      qr_escaneado:            ctx.qr_escaneado           || false,\n      fecha_asamblea:          ctx.fecha_asamblea,\n      hora_asamblea:           ctx.hora_asamblea,\n      nombre_asamblea:         ctx.nombre_asamblea,\n      estado_asamblea:         ctx.estado_asamblea,\n      url_documentacion:       ctx.url_documentacion,\n      asamblea_id:             ctx.asamblea_id,\n      participante_id:         ctx.participante_id,\n      votacion_activa, pregunta_actual_texto, pregunta_actual_id,\n      opciones_voto, tipo_calculo, tiempo_restante_min, ya_voto_pregunta_actual\n    }\n  }}];\n} catch(e) {\n  return [{ json: { telefono, texto_usuario: item.texto_usuario, es_audio: item.es_audio, memoria_conversacion:'Sin historial previo.', _ctx_error: e.message, contexto: { ...CTX_VACIO } } }];\n}"
+      },
+      "id": "n014",
+      "name": "🧠 Cargar Contexto",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1728,
+        512
+      ]
+    },
+    {
+      "parameters": {
+        "text": "={{ $json.texto_usuario }}",
+        "options": {
+          "systemMessage": "Eres VERA, asistente virtual oficial de Asamblea 360.\nTu proposito es acompanar a los copropietarios durante el proceso de acreditacion y participacion en asambleas de propiedad horizontal en Colombia.\n\nIDENTIDAD Y COMUNICACION\nTono: profesional, calida, servicial. Nunca opinas como votar.\nIdioma: espanol colombiano natural. Maximo 80 palabras por respuesta.\nFormato: texto plano para WhatsApp. Sin asteriscos, almohadillas ni markdown.\nEmojis: solo para guiar o dar claridad visual. Uso moderado.\nSiempre ofreces opciones claras cuando el usuario debe decidir algo.\nCuando hay un problema que no puedes resolver, informas con empatia y das el siguiente paso concreto.\n\nIMPORTANTE: Tu respuesta es texto plano que se envia directamente al usuario por WhatsApp.\nNO devuelvas JSON. NO uses markdown. Solo texto plano natural.\nCuando necesites ejecutar una accion, usa la herramienta (tool) correspondiente.\nEl resultado de la herramienta te lo devuelve el sistema y tu formulas la respuesta final al usuario.\n\nCONTEXTO ACTUAL DEL USUARIO\nnumero_en_base: {{ $json.contexto.numero_en_base }}\npropietario_bloqueado: {{ $json.contexto.propietario_bloqueado }}\nhabeas_data_aceptado: {{ $json.contexto.habeas_data_aceptado }}\nprimera_vez: {{ $json.contexto.primera_vez }}\nnombre_usuario: {{ $json.contexto.nombre_usuario }}\ntipo_usuario: {{ $json.contexto.tipo_usuario }}\nes_delegado: {{ $json.contexto.es_delegado }}\nnombre_unidad: {{ $json.contexto.nombre_unidad }}\ncoeficiente: {{ $json.contexto.coeficiente }}\nnombre_edificio: {{ $json.contexto.nombre_edificio }}\ncorreo_registrado: {{ $json.contexto.correo_registrado }}\ndatos_faltantes: {{ $json.contexto.datos_faltantes }}\nacreditacion_estado: {{ $json.contexto.acreditacion_estado }}\ndelegacion_pendiente: {{ $json.contexto.delegacion_pendiente }}\nqr_generado: {{ $json.contexto.qr_generado }}\nqr_escaneado: {{ $json.contexto.qr_escaneado }}\nfecha_asamblea: {{ $json.contexto.fecha_asamblea }}\nhora_asamblea: {{ $json.contexto.hora_asamblea }}\nnombre_asamblea: {{ $json.contexto.nombre_asamblea }}\nestado_asamblea: {{ $json.contexto.estado_asamblea }}\nurl_documentacion: {{ $json.contexto.url_documentacion }}\nasamblea_id: {{ $json.contexto.asamblea_id }}\nparticipante_id: {{ $json.contexto.participante_id }}\nvotacion_activa: {{ $json.contexto.votacion_activa }}\npregunta_actual_texto: {{ $json.contexto.pregunta_actual_texto }}\npregunta_actual_id: {{ $json.contexto.pregunta_actual_id }}\nopciones_voto: {{ $json.contexto.opciones_voto }}\ntipo_calculo: {{ $json.contexto.tipo_calculo }}\ntiempo_restante_min: {{ $json.contexto.tiempo_restante_min }}\nya_voto_pregunta_actual: {{ $json.contexto.ya_voto_pregunta_actual }}\ntelefono: {{ $json.telefono }}\n\nARBOL DE DECISION — SIGUE ESTE ORDEN SIN EXCEPCION\n\nPASO 0 — PROPIETARIO BLOQUEADO POR DELEGACION\nSi propietario_bloqueado = true:\n  Responder exactamente:\n  \"No tienes acceso activo para esta asamblea. Si tienes preguntas, comunicate con el administrador de tu copropiedad.\"\n  STOP. No hacer nada mas. No ofrecer alternativas ni flujos adicionales.\n\nPASO 1 — PRIMER CONTACTO Y RECONOCIMIENTO\nSi habeas_data_aceptado = false Y primera_vez = true:\n  Ir a PASO 2 (Habeas Data) sin importar lo demas.\n\nSi numero_en_base = true:\n  VERA se presenta y muestra el estado actual del usuario.\n  Usar esta estructura de saludo (adaptar con los datos reales del contexto):\n  \"Hola! Soy VERA, tu asistente de IA para la asamblea de [nombre_edificio].\n  Veo que tu numero esta vinculado a [nombre_unidad].\n  [Mostrar estado segun acreditacion_estado — ver PASO 3]\"\n\nSi numero_en_base = false:\n  VERA se presenta e inicia flujo de vinculacion.\n  \"Hola! Soy VERA, asistente oficial de Asamblea 360.\n  Tu numero aun no esta vinculado a ninguna unidad de esta asamblea.\n  Para continuar necesito tu codigo de acceso de 5 caracteres.\n  Lo encuentras en el correo de convocatoria que te envio el administrador.\"\n  Esperar codigo. Cuando llegue usar tool validar_codigo_acceso.\n  STOP. No avanzar hasta validar codigo.\n\nPASO 2 — HABEAS DATA (siempre antes de cualquier accion)\nSi habeas_data_aceptado = false:\n  Mostrar exactamente:\n  \"Politica de tratamiento de datos (Ley 1581/2012)\n  Asamblea 360 usara tu nombre y numero de WhatsApp unicamente para gestionar esta asamblea.\n  No compartimos tu informacion con terceros. Los datos se eliminan 30 dias despues de la asamblea.\n  Responde SI ACEPTO o NO ACEPTO\"\n\n  Si dice SI ACEPTO usar tool registrar_habeas_data y continuar al PASO 3.\n  Si dice NO ACEPTO responder que no puede continuar el proceso y usar tool escalar_soporte con nivel NORMAL y motivo rechazo_habeas_data.\n  STOP. No hacer nada mas hasta recibir respuesta.\n\nPASO 3 — ESTADO DE ACREDITACION\nEvalua acreditacion_estado y actua segun el caso:\n\n[ESTADO: sin_acreditar]\nSi datos_faltantes tiene elementos:\n  Informar cuales datos faltan.\n  Solicitar uno a uno (no todos juntos).\n  Cuando el usuario provea un dato usar tool actualizar_datos_participante con el campo y valor correspondiente.\n  Campos validos: email, nombre, cedula, tipo_documento.\n  Cuando esten completos continuar.\nSi datos_faltantes esta vacio:\n  Mostrar resumen de datos al usuario para confirmacion.\n  Preguntar: \"Deseas proceder con tu acreditacion o prefieres delegar tu participacion?\"\n  Opcion 1: Acreditarse ir a GENERAR QR.\n  Opcion 2: Delegar ir a FLUJO DELEGACION.\n\n[ESTADO: pendiente_otp]\n  Si en el historial NO se evidencia que ya se envio un OTP: usar tool enviar_otp primero.\n  Si ya se envio OTP: recordar al usuario que tiene un codigo pendiente.\n  \"Enviamos un codigo de verificacion a tu WhatsApp. Ingresalo aqui para continuar.\"\n  Cuando llegue el OTP (6 digitos) usar tool verificar_otp.\n\n[ESTADO: datos_incorrectos]\n  Informar que hay datos que no pudieron validarse.\n  \"Tus datos presentan una inconsistencia que solo puede corregir el administrador de la copropiedad. El proceso puede tomar hasta 12 horas. Te avisare cuando estes habilitado.\"\n  Usar tool escalar_soporte con nivel NORMAL y motivo datos_incorrectos.\n  STOP.\n\n[ESTADO: acreditado — qr_generado = false]\n  Generar QR usando tool generar_qr.\n  Informar: \"Tu acreditacion esta completa. Te enviamos el link de tu QR por este chat y la imagen a tu correo [correo_registrado]. Recuerda presentarlo el dia de la asamblea para activar tu participacion.\"\n\n[ESTADO: acreditado — qr_generado = true]\n  \"Ya estas acreditado. Tu QR fue enviado anteriormente a este chat y a tu correo. Necesitas que te lo reenvie?\"\n  Si dice si usar tool reenviar_qr.\n\n[ESTADO: delegacion_pendiente = true]\n  \"Tu proceso de delegacion esta en curso. El administrador revisara el poder y te notificaremos cuando el delegado quede habilitado (maximo 12 horas).\"\n\nFLUJO DE DELEGACION\nSolo disponible si acreditacion_estado = sin_acreditar o acreditado Y qr_generado = false.\nEl propietario debe estar verificado (datos completos y habeas_data_aceptado = true).\n\nCuando el usuario solicita delegar:\nVERA presenta exactamente estas dos opciones:\n\n\"Para delegar tu participacion tienes dos caminos:\n\n1 Digital (recomendado): Recolectamos los datos de tu delegado aqui mismo, te enviamos el documento legal al correo y tu lo devuelves firmado. El proceso es mas agil.\n\n2 Presencial: Llevas el poder firmado fisicamente el dia de la asamblea. Ten en cuenta que esto puede hacer mas lento el registro ese dia.\n\nCual prefieres?\"\n\n[Si elige opcion 1 — Digital:]\n  Recolectar en el chat, uno por uno:\n  a) Nombre completo del delegado\n  b) Numero de cedula del delegado\n  c) Correo electronico del delegado\n  d) Numero de celular del delegado (opcional pero recomendado)\n  Confirmar datos antes de proceder.\n  Usar tool registrar_delegacion_digital con todos los datos.\n  Sistema envia documento legal al correo del propietario automaticamente.\n  Informar: \"Enviamos el documento de poder a [correo_registrado]. Una vez lo firmen ambas partes, devuelvelo al administrador. El administrador lo revisara y el delegado quedara habilitado (maximo 12 horas).\"\n\n[Si elige opcion 2 — Presencial:]\n  Informar: \"Perfecto. El delegado debe llevar el poder fisico firmado el dia de la asamblea. El registro presencial puede tomar mas tiempo. Si en algun momento decides hacerlo digital, avisame y lo gestionamos aqui.\"\n  Usar tool registrar_delegacion_presencial.\n\nPASO 4 — VOTACION (solo durante asamblea activa)\nSolo aplica si estado_asamblea = EN_CURSO Y qr_escaneado = true.\n\nSi qr_escaneado = false Y votacion_activa = true:\n  \"Para activar tu participacion necesitas presentar tu QR en el punto de registro presencial de la asamblea.\"\n  STOP.\n\nSi votacion_activa = true Y qr_escaneado = true:\n  Si ya_voto_pregunta_actual = true:\n    \"Ya registramos tu voto para esta pregunta. Te avisare cuando haya una nueva.\"\n  Si ya_voto_pregunta_actual = false:\n    A) Presentar la pregunta con sus opciones.\n    B) Esperar opcion valida del usuario.\n    C) Confirmar: \"Vas a votar [OPCION]. Confirmas? Responde CONFIRMO o CANCELAR.\"\n    D) Si CONFIRMO usar tool registrar_voto con la opcion elegida.\n    E) \"Voto registrado. Te avisare cuando haya una nueva pregunta.\"\n\nPASO 5 — FLUJO GENERAL\nResponder consultas generales sobre la asamblea con los datos del contexto.\nSi pregunta por documentos usar tool buscar_documentos.\nSi escribe SOPORTE o muestra frustracion repetida usar tool escalar_soporte con nivel segun gravedad.\n\nREGLAS INAMOVIBLES\n1. NUNCA registrar voto sin CONFIRMO explicito del usuario.\n2. NUNCA opinar sobre como votar.\n3. NUNCA inventar datos de documentos, correos o unidades.\n4. NUNCA revelar el voto de otros participantes.\n5. NUNCA procesar voto si ya_voto_pregunta_actual = true.\n6. NUNCA procesar voto si qr_escaneado = false.\n7. NUNCA activar flujo de acreditacion si propietario_bloqueado = true.\n8. NUNCA registrar delegacion sin tener todos los datos completos del delegado.\n9. NUNCA confirmar delegacion sin que el usuario haya visto y aprobado los datos recolectados.\n10. Si recibes un audio con posible codigo pedir que lo escriban como texto.\n11. Si no puedes ayudar \"Eso esta fuera de lo que puedo gestionar. Escribe SOPORTE.\"",
+          "maxIterations": 3,
+          "returnIntermediateSteps": false
+        }
+      },
+      "id": "n015",
+      "name": "🤖 AI Agent",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 1.7,
+      "position": [
+        1968,
+        512
+      ]
+    },
+    {
+      "parameters": {
+        "model": "llama-3.3-70b-versatile",
+        "options": {
+          "maxTokensToSample": 512,
+          "temperature": 0.2
+        }
+      },
+      "id": "n016",
+      "name": "Groq LLM",
+      "type": "@n8n/n8n-nodes-langchain.lmChatGroq",
+      "typeVersion": 1,
+      "position": [
+        1968,
+        720
+      ],
+      "credentials": {
+        "groqApi": {
+          "id": "8riArGJ0hY5hOE1S",
+          "name": "Groq account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "sessionKey": "={{ $('🧠 Cargar Contexto').first().json.telefono }}",
+        "tableName": "vera_chat_memory",
+        "contextWindowLength": 8
+      },
+      "id": "n017",
+      "name": "PostgreSQL Memory",
+      "type": "@n8n/n8n-nodes-langchain.memoryPostgresChat",
+      "typeVersion": 1.3,
+      "position": [
+        2160,
+        720
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "DFFNfRCLFLau6ZIR",
+          "name": "Postgres - Supabase VERA Memory"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "name": "validar_codigo_acceso",
+        "description": "Valida codigo de 5 caracteres para vincular numero de WhatsApp a una unidad de la asamblea. Parametro: codigo_acceso (string de 5 caracteres alfanumericos)",
+        "jsCode": "// ─── TOOL: VALIDAR CODIGO ───\nconst ctx = $('🧠 Cargar Contexto').first().json;\nconst SB_URL = $vars.SUPABASE_URL, SB_KEY = $vars.SUPABASE_SERVICE_KEY;\nconst hdrs = { 'apikey': SB_KEY, 'Authorization': `Bearer ${SB_KEY}`, 'Content-Type': 'application/json' };\n\nconst codigo = ($input.item.json.codigo_acceso || '').trim().toUpperCase();\nconst telefono = ctx.telefono;\nconst telBD = telefono.startsWith('webchat_') ? `+${telefono}` : (telefono.startsWith('57') ? `+${telefono}` : `+57${telefono}`);\n\nif (!/^[A-Z0-9]{5}$/.test(codigo)) {\n  return 'Error: El codigo de acceso debe tener exactamente 5 caracteres alfanumericos.';\n}\n\nconst r1 = await fetch(`${SB_URL}/rest/v1/estado_acreditacion_completo?codigo_acceso=eq.${codigo}&limit=1`, { headers: { 'apikey': SB_KEY, 'Authorization': `Bearer ${SB_KEY}` } });\nconst [p] = await r1.json();\n\nif (!p) return 'Error: Codigo no encontrado. Pide al usuario que verifique el correo de convocatoria.';\nif (['CERRADA','CANCELADA'].includes(p.estado_asamblea)) return 'Error: Esta asamblea ya finalizo. No es posible acreditarse.';\n\nawait fetch(`${SB_URL}/rest/v1/participantes_asamblea?id=eq.${p.participante_id}`, { method: 'PATCH', headers: hdrs, body: JSON.stringify({ telefono_whatsapp: telBD, primera_vez: false }) });\n\nreturn `Codigo valido. Numero vinculado a la unidad ${p.nombre_unidad} del edificio ${p.nombre_edificio || ''}.`;"
+      },
+      "id": "n018",
+      "name": "validar_codigo_acceso",
+      "type": "@n8n/n8n-nodes-langchain.toolCode",
+      "typeVersion": 1,
+      "position": [
+        1296,
+        800
+      ]
+    },
+    {
+      "parameters": {
+        "name": "registrar_habeas_data",
+        "description": "Registra aceptacion del tratamiento de datos personales (Ley 1581/2012). No requiere parametros.",
+        "jsCode": "const ctx = $('🧠 Cargar Contexto').first().json;\nconst SB_URL = $vars.SUPABASE_URL, SB_KEY = $vars.SUPABASE_SERVICE_KEY;\nconst hdrs = { 'apikey': SB_KEY, 'Authorization': `Bearer ${SB_KEY}`, 'Content-Type': 'application/json' };\nconst pid = ctx.contexto?.participante_id;\nif (!pid) return 'Error: No se encontro perfil del usuario. Escalar a soporte.';\nawait fetch(`${SB_URL}/rest/v1/participantes_asamblea?id=eq.${pid}`, { method: 'PATCH', headers: hdrs, body: JSON.stringify({ habeas_data_aceptado: true, habeas_data_fecha: new Date().toISOString() }) });\nreturn 'Habeas data aceptado exitosamente. Continuar con el proceso de acreditacion.';"
+      },
+      "id": "n019",
+      "name": "registrar_habeas_data",
+      "type": "@n8n/n8n-nodes-langchain.toolCode",
+      "typeVersion": 1,
+      "position": [
+        1680,
+        928
+      ]
+    },
+    {
+      "parameters": {
+        "name": "actualizar_datos_participante",
+        "description": "Actualiza un dato del participante. Parametros: campo (string: 'email', 'nombre', 'cedula' o 'tipo_documento'), valor (string: el valor a guardar)",
+        "jsCode": "// ─── TOOL: ACTUALIZAR DATOS PARTICIPANTE ───\nconst ctx = $('🧠 Cargar Contexto').first().json;\nconst SB_URL = $vars.SUPABASE_URL, SB_KEY = $vars.SUPABASE_SERVICE_KEY;\nconst hdrs = { 'apikey': SB_KEY, 'Authorization': `Bearer ${SB_KEY}`, 'Content-Type': 'application/json' };\nconst N8N_BASE = $vars.N8N_WEBHOOK_BASE || 'https://tu-dominio.com/webhook';\nconst RESEND_KEY = $vars.RESEND_API_KEY;\n\nconst campo = ($input.item.json.campo || '').trim().toLowerCase();\nconst valor = ($input.item.json.valor || '').trim();\nconst pid = ctx.contexto?.participante_id;\n\nif (!campo || !valor) return 'Error: No se recibio el dato a actualizar.';\n\nif (campo === 'email') {\n  if (!/^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/.test(valor)) return 'Error: El correo no es valido.';\n  const expires = new Date(Date.now() + 24*3600000).toISOString();\n  await fetch(`${SB_URL}/rest/v1/participantes_asamblea?id=eq.${pid}`, { method: 'PATCH', headers: hdrs, body: JSON.stringify({ email_acreditacion: valor, email_confirmado: false, email_token_expires_at: expires }) });\n\n  const r1 = await fetch(`${SB_URL}/rest/v1/participantes_asamblea?id=eq.${pid}&select=email_token,unidades(propietario_nombre),asambleas(nombre_evento)`, { headers: { 'apikey': SB_KEY, 'Authorization': `Bearer ${SB_KEY}` } });\n  const [p] = await r1.json();\n  const link = `${N8N_BASE}/acreditacion/confirmar-email/${p?.email_token}`;\n  const nombre = p?.unidades?.propietario_nombre || 'Propietario';\n  const asamblea = p?.asambleas?.nombre_evento || 'la asamblea';\n\n  try {\n    await fetch('https://api.resend.com/emails', {\n      method: 'POST',\n      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${RESEND_KEY}` },\n      body: JSON.stringify({\n        from: 'Asamblea360 <noreply@tu-dominio.com>',\n        to: [valor],\n        subject: `Confirma tu correo — ${asamblea}`,\n        html: `<p>Hola <strong>${nombre}</strong>,</p><p>Confirma tu correo para <strong>${asamblea}</strong>:</p><p><a href='${link}' style='background:#1B3A6B;color:white;padding:12px 24px;text-decoration:none;border-radius:6px;display:inline-block'>Confirmar correo</a></p><p style='color:#999;font-size:12px'>Valido 24h. Si no solicitaste esto, ignora este mensaje.</p>`\n      })\n    });\n  } catch(e) { console.error('Resend error:', e.message); }\n\n  return `Email registrado. Enlace de confirmacion enviado a ${valor}. El usuario debe revisar su correo y hacer clic en el enlace.`;\n}\n\nif (campo === 'cedula') {\n  if (!/^\\d{6,12}$/.test(valor)) return 'Error: La cedula debe tener entre 6 y 12 digitos numericos.';\n  await fetch(`${SB_URL}/rest/v1/participantes_asamblea?id=eq.${pid}`, { method: 'PATCH', headers: hdrs, body: JSON.stringify({ documento_numero: valor }) });\n  return 'Cedula actualizada exitosamente.';\n}\n\nif (campo === 'tipo_documento') {\n  const tipos_validos = ['CC', 'CE', 'NIT', 'PP', 'TI'];\n  const v = valor.toUpperCase();\n  if (!tipos_validos.includes(v)) return `Error: Tipo de documento no valido. Opciones: ${tipos_validos.join(', ')}.`;\n  await fetch(`${SB_URL}/rest/v1/participantes_asamblea?id=eq.${pid}`, { method: 'PATCH', headers: hdrs, body: JSON.stringify({ tipo_documento: v }) });\n  return 'Tipo de documento actualizado exitosamente.';\n}\n\nif (campo === 'nombre') {\n  if (valor.length < 3) return 'Error: El nombre debe tener al menos 3 caracteres.';\n  await fetch(`${SB_URL}/rest/v1/participantes_asamblea?id=eq.${pid}`, { method: 'PATCH', headers: hdrs, body: JSON.stringify({ nombre_participante: valor }) });\n  return 'Nombre actualizado exitosamente.';\n}\n\nreturn `Error: No se puede actualizar el campo \"${campo}\". Campos validos: email, nombre, cedula, tipo_documento.`;"
+      },
+      "id": "n020",
+      "name": "actualizar_datos_participante",
+      "type": "@n8n/n8n-nodes-langchain.toolCode",
+      "typeVersion": 1,
+      "position": [
+        1808,
+        928
+      ]
+    },
+    {
+      "parameters": {
+        "name": "enviar_otp",
+        "description": "Genera y envia codigo OTP de 6 digitos al WhatsApp del usuario para verificar celular. No requiere parametros.",
+        "jsCode": "const ctx = $('🧠 Cargar Contexto').first().json;\nconst SB_URL = $vars.SUPABASE_URL, SB_KEY = $vars.SUPABASE_SERVICE_KEY;\nconst BAILEYS_URL = $vars.BAILEYS_URL || 'http://localhost:3006';\nconst hdrs = { 'apikey': SB_KEY, 'Authorization': `Bearer ${SB_KEY}`, 'Content-Type': 'application/json' };\nconst pid = ctx.contexto?.participante_id;\nconst telefono = ctx.telefono;\nconst telWA = telefono.startsWith('57') ? telefono : `57${telefono}`;\nconst jid = `${telWA}@s.whatsapp.net`;\n\nif (!pid) return 'Error: No se encontro perfil. Escalar a soporte.';\n\nconst otp = String(Math.floor(100000 + Math.random() * 900000));\nconst expires = new Date(Date.now() + 10 * 60000).toISOString();\n\nawait fetch(`${SB_URL}/rest/v1/participantes_asamblea?id=eq.${pid}`, {\n  method: 'PATCH', headers: hdrs,\n  body: JSON.stringify({ celular_otp: otp, celular_otp_expires_at: expires, celular_intentos_otp: 0 })\n});\n\ntry {\n  await fetch(`${BAILEYS_URL}/send`, {\n    method: 'POST',\n    headers: { 'Content-Type': 'application/json' },\n    body: JSON.stringify({ phone: jid, message: `Tu codigo de verificacion: ${otp}\\n\\nValido por 10 minutos. No lo compartas con nadie.` })\n  });\n} catch(e) { return 'Error: No se pudo enviar el OTP. Intentar de nuevo.'; }\n\nreturn 'Codigo de verificacion enviado al WhatsApp del usuario. Pedirle que ingrese los 6 digitos.';"
+      },
+      "id": "n021",
+      "name": "enviar_otp",
+      "type": "@n8n/n8n-nodes-langchain.toolCode",
+      "typeVersion": 1,
+      "position": [
+        1920,
+        928
+      ]
+    },
+    {
+      "parameters": {
+        "name": "verificar_otp",
+        "description": "Verifica codigo OTP de 6 digitos enviado por el usuario. Parametro: otp (string de 6 digitos)",
+        "jsCode": "const ctx = $('🧠 Cargar Contexto').first().json;\nconst SB_URL = $vars.SUPABASE_URL, SB_KEY = $vars.SUPABASE_SERVICE_KEY;\nconst hdrs = { 'apikey': SB_KEY, 'Authorization': `Bearer ${SB_KEY}`, 'Content-Type': 'application/json' };\nconst pid = ctx.contexto?.participante_id;\nconst otp = String($input.item.json.otp || '').trim();\n\nif (!otp || otp.length !== 6 || isNaN(Number(otp))) return 'Error: El codigo debe tener 6 digitos.';\n\nconst r1 = await fetch(`${SB_URL}/rest/v1/participantes_asamblea?id=eq.${pid}&select=celular_otp,celular_otp_expires_at,celular_intentos_otp`, { headers: { 'apikey': SB_KEY, 'Authorization': `Bearer ${SB_KEY}` } });\nconst [p] = await r1.json();\n\nif (!p) return 'Error: No se encontro perfil. Escalar a soporte.';\nif ((p.celular_intentos_otp||0) >= 5) return 'Error: Demasiados intentos. El usuario debe reiniciar el proceso.';\nif (p.celular_otp_expires_at && new Date(p.celular_otp_expires_at) < new Date()) return 'Error: El codigo expiro. Enviar uno nuevo.';\n\nawait fetch(`${SB_URL}/rest/v1/participantes_asamblea?id=eq.${pid}`, { method: 'PATCH', headers: hdrs, body: JSON.stringify({ celular_intentos_otp: (p.celular_intentos_otp||0)+1 }) });\n\nif (p.celular_otp !== otp) {\n  const rest = 4 - (p.celular_intentos_otp||0);\n  return `Error: Codigo incorrecto. Quedan ${rest} intento(s).`;\n}\n\nawait fetch(`${SB_URL}/rest/v1/participantes_asamblea?id=eq.${pid}`, { method: 'PATCH', headers: hdrs, body: JSON.stringify({ celular_confirmado: true, celular_otp: null, celular_intentos_otp: 0 }) });\nreturn 'Celular verificado exitosamente.';"
+      },
+      "id": "n022",
+      "name": "verificar_otp",
+      "type": "@n8n/n8n-nodes-langchain.toolCode",
+      "typeVersion": 1,
+      "position": [
+        2048,
+        928
+      ]
+    },
+    {
+      "parameters": {
+        "name": "generar_qr",
+        "description": "Genera QR de acreditacion. Envia link por WhatsApp e imagen por correo. No requiere parametros.",
+        "jsCode": "const ctx = $('🧠 Cargar Contexto').first().json;\nconst SB_URL = $vars.SUPABASE_URL, SB_KEY = $vars.SUPABASE_SERVICE_KEY;\nconst BAILEYS_URL = $vars.BAILEYS_URL || 'http://localhost:3006';\nconst RESEND_KEY = $vars.RESEND_API_KEY;\nconst APP_QR = $vars.APP_QR_BASE || 'https://tu-dominio.com/qr';\nconst hdrs = { 'apikey': SB_KEY, 'Authorization': `Bearer ${SB_KEY}`, 'Content-Type': 'application/json' };\nconst pid = ctx.contexto?.participante_id;\nconst telefono = ctx.telefono;\nconst telWA = telefono.startsWith('57') ? telefono : `57${telefono}`;\nconst jid = `${telWA}@s.whatsapp.net`;\n\nconst r1 = await fetch(`${SB_URL}/rest/v1/estado_acreditacion_completo?participante_id=eq.${pid}&limit=1`, { headers: { 'apikey': SB_KEY, 'Authorization': `Bearer ${SB_KEY}` } });\nconst [p] = await r1.json();\n\nif (!p) return 'Error: No se encontro perfil.';\nif (!p.email_confirmado) return `Error: El usuario debe confirmar su correo primero. Revisar ${p.email_acreditacion} y hacer clic en el enlace.`;\nif (!p.celular_confirmado) return 'Error: El usuario debe verificar su celular primero. Ingresar el codigo OTP de 6 digitos.';\nif (p.qr_generado && !p.qr_invalidado) return 'QR ya fue generado anteriormente. Usar reenviar_qr si necesita recibirlo de nuevo.';\n\nconst r2 = await fetch(`${SB_URL}/rest/v1/participantes_asamblea?id=eq.${pid}&select=qr_token`, { headers: { 'apikey': SB_KEY, 'Authorization': `Bearer ${SB_KEY}` } });\nconst [tok] = await r2.json();\nconst qr_token = tok?.qr_token;\nconst qr_url = `${APP_QR}/${qr_token}`;\nconst qr_img = `https://api.qrserver.com/v1/create-qr-code/?size=400x400&data=${encodeURIComponent(qr_url)}&format=png&ecc=H`;\n\nawait fetch(`${SB_URL}/rest/v1/participantes_asamblea?id=eq.${pid}`, { method: 'PATCH', headers: hdrs, body: JSON.stringify({ estado_acreditacion: 'acreditado', fecha_acreditacion: new Date().toISOString(), qr_generado: true, qr_generado_at: new Date().toISOString(), qr_invalidado: false }) });\n\nawait fetch(`${SB_URL}/rest/v1/audit_logs`, { method: 'POST', headers: { ...hdrs, 'Prefer': 'return=minimal' }, body: JSON.stringify({ accion:'qr_generado', entidad:'participantes_asamblea', entidad_id:pid, participante_id:pid, asamblea_id:p.asamblea_id, datos_json:{ metodo:'whatsapp_vera' } }) });\n\nconst fechaEvt = p.fecha_hora_inicio ? new Date(p.fecha_hora_inicio).toLocaleDateString('es-CO',{weekday:'long',year:'numeric',month:'long',day:'numeric'}) : '';\nconst horaEvt = p.fecha_hora_inicio ? new Date(p.fecha_hora_inicio).toLocaleTimeString('es-CO',{hour:'2-digit',minute:'2-digit'}) : '';\n\ntry {\n  const msgWA = `Acreditacion exitosa\\n\\nHola ${p.propietario_nombre}\\nUnidad: ${p.nombre_unidad} | ${p.nombre_edificio}\\n\\n${p.nombre_evento}\\n${fechaEvt} a las ${horaEvt}\\n\\nTu QR de acreditacion:\\n${qr_url}\\n\\nTambien lo enviamos a ${p.email_acreditacion}\\n\\nPresenta este QR al ingresar. No lo compartas.`;\n  await fetch(`${BAILEYS_URL}/send`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ phone: jid, message: msgWA }) });\n} catch(e) { console.error('Error QR WA:', e.message); }\n\ntry {\n  await fetch('https://api.resend.com/emails', { method:'POST', headers:{'Content-Type':'application/json','Authorization':`Bearer ${RESEND_KEY}`}, body: JSON.stringify({ from:'Asamblea360 <noreply@tu-dominio.com>', to:[p.email_acreditacion], subject:`Tu QR de acreditacion — ${p.nombre_evento}`, html:`<div style='font-family:Arial,sans-serif;max-width:560px;margin:0 auto;padding:40px'><h2 style='color:#1B3A6B'>Acreditacion exitosa</h2><p>Hola <strong>${p.propietario_nombre}</strong>,</p><p>Tu QR para <strong>${p.nombre_evento}</strong> esta listo.</p><p><strong>Unidad:</strong> ${p.nombre_unidad}<br><strong>Edificio:</strong> ${p.nombre_edificio}</p><div style='text-align:center;margin:28px 0'><img src='${qr_img}' width='280' height='280' alt='QR'/></div><p style='background:#FFF9C4;padding:12px;border-radius:4px'>No compartas este QR. Es personal e intransferible.</p></div>` }) });\n} catch(e) { console.error('Error QR email:', e.message); }\n\nreturn `QR generado y enviado. Link enviado por WhatsApp e imagen enviada a ${p.email_acreditacion}.`;"
+      },
+      "id": "n023",
+      "name": "generar_qr",
+      "type": "@n8n/n8n-nodes-langchain.toolCode",
+      "typeVersion": 1,
+      "position": [
+        2160,
+        928
+      ]
+    },
+    {
+      "parameters": {
+        "name": "reenviar_qr",
+        "description": "Reenvia QR ya generado. Link por WhatsApp e imagen por correo. No requiere parametros.",
+        "jsCode": "const ctx = $('🧠 Cargar Contexto').first().json;\nconst SB_URL = $vars.SUPABASE_URL, SB_KEY = $vars.SUPABASE_SERVICE_KEY;\nconst BAILEYS_URL = $vars.BAILEYS_URL || 'http://localhost:3006';\nconst RESEND_KEY = $vars.RESEND_API_KEY;\nconst APP_QR = $vars.APP_QR_BASE || 'https://tu-dominio.com/qr';\nconst pid = ctx.contexto?.participante_id;\nconst telefono = ctx.telefono;\nconst telWA = telefono.startsWith('57') ? telefono : `57${telefono}`;\nconst jid = `${telWA}@s.whatsapp.net`;\n\nconst r1 = await fetch(`${SB_URL}/rest/v1/participantes_asamblea?id=eq.${pid}&select=qr_token,qr_generado,qr_invalidado,email_acreditacion,unidades(propietario_nombre,nombre_unidad),asambleas(nombre_evento,copropiedades(nombre))`, { headers: { 'apikey': SB_KEY, 'Authorization': `Bearer ${SB_KEY}` } });\nconst [p] = await r1.json();\n\nif (!p?.qr_generado || p.qr_invalidado) return 'Error: No hay QR valido. Usar generar_qr para crear uno nuevo.';\n\nconst qr_url = `${APP_QR}/${p.qr_token}`;\nconst qr_img = `https://api.qrserver.com/v1/create-qr-code/?size=400x400&data=${encodeURIComponent(qr_url)}&format=png&ecc=H`;\n\ntry {\n  const msgWA = `Tu QR de acreditacion\\n\\nHola ${p.unidades?.propietario_nombre||''}\\nUnidad: ${p.unidades?.nombre_unidad||''} | ${p.asambleas?.copropiedades?.nombre||''}\\nAsamblea: ${p.asambleas?.nombre_evento||''}\\n\\nTu QR:\\n${qr_url}\\n\\nPresenta este codigo al ingresar.`;\n  await fetch(`${BAILEYS_URL}/send`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ phone: jid, message: msgWA }) });\n} catch(e) { console.error('Error reenviar QR WA:', e.message); }\n\nif (p.email_acreditacion) {\n  try {\n    await fetch('https://api.resend.com/emails', { method:'POST', headers:{'Content-Type':'application/json','Authorization':`Bearer ${RESEND_KEY}`}, body: JSON.stringify({ from:'Asamblea360 <noreply@tu-dominio.com>', to:[p.email_acreditacion], subject:`Tu QR de acreditacion — ${p.asambleas?.nombre_evento||''}`, html:`<div style='font-family:Arial,sans-serif;max-width:560px;margin:0 auto;padding:40px'><h2 style='color:#1B3A6B'>Tu QR de acreditacion</h2><p>Hola <strong>${p.unidades?.propietario_nombre||''}</strong>,</p><div style='text-align:center;margin:28px 0'><img src='${qr_img}' width='280' height='280' alt='QR'/></div><p style='background:#FFF9C4;padding:12px;border-radius:4px'>No compartas este QR.</p></div>` }) });\n  } catch(e) {}\n}\n\nreturn 'QR reenviado por WhatsApp y correo.';"
+      },
+      "id": "n024",
+      "name": "reenviar_qr",
+      "type": "@n8n/n8n-nodes-langchain.toolCode",
+      "typeVersion": 1,
+      "position": [
+        2288,
+        928
+      ]
+    },
+    {
+      "parameters": {
+        "name": "registrar_delegacion_digital",
+        "description": "Registra delegacion digital. Genera documento de poder y envia por correo. Parametros: nombre_delegado (string), cedula_delegado (string), correo_delegado (string), celular_delegado (string, opcional)",
+        "jsCode": "const ctx = $('🧠 Cargar Contexto').first().json;\nconst SB_URL = $vars.SUPABASE_URL, SB_KEY = $vars.SUPABASE_SERVICE_KEY;\nconst RESEND_KEY = $vars.RESEND_API_KEY;\nconst hdrs = { 'apikey': SB_KEY, 'Authorization': `Bearer ${SB_KEY}`, 'Content-Type': 'application/json' };\nconst pid = ctx.contexto?.participante_id;\nconst { nombre_delegado, cedula_delegado, correo_delegado, celular_delegado } = $input.item.json;\n\nif (!nombre_delegado || !cedula_delegado || !correo_delegado) return 'Error: Faltan datos del delegado (nombre, cedula, correo).';\n\nawait fetch(`${SB_URL}/rest/v1/participantes_asamblea?id=eq.${pid}`, { method: 'PATCH', headers: hdrs, body: JSON.stringify({ delegado_nombre: nombre_delegado, delegado_cedula: cedula_delegado, delegado_email: correo_delegado, delegado_celular: celular_delegado || null, delegacion_estado: 'pendiente', delegacion_tipo: 'digital', delegacion_fecha: new Date().toISOString() }) });\n\nconst r1 = await fetch(`${SB_URL}/rest/v1/participantes_asamblea?id=eq.${pid}&select=email_acreditacion,unidades(propietario_nombre,nombre_unidad,coeficiente),asambleas(nombre_evento,fecha_hora_inicio,copropiedades(nombre,email_admin))`, { headers: { 'apikey': SB_KEY, 'Authorization': `Bearer ${SB_KEY}` } });\nconst [p] = await r1.json();\n\nconst correo_prop = p?.email_acreditacion;\nconst correo_admin = p?.asambleas?.copropiedades?.email_admin || 'el administrador';\nconst nombre_prop = p?.unidades?.propietario_nombre || 'Propietario';\nconst nombre_unidad = p?.unidades?.nombre_unidad || '';\nconst nombre_asm = p?.asambleas?.nombre_evento || 'la asamblea';\nconst nombre_edif = p?.asambleas?.copropiedades?.nombre || '';\nconst coef = p?.unidades?.coeficiente || '';\nconst fechaHoy = new Date().toLocaleDateString('es-CO',{year:'numeric',month:'long',day:'numeric'});\n\ntry {\n  await fetch('https://api.resend.com/emails', { method:'POST', headers:{'Content-Type':'application/json','Authorization':`Bearer ${RESEND_KEY}`}, body: JSON.stringify({ from:'Asamblea360 <noreply@tu-dominio.com>', to:[correo_prop], subject:`Documento de poder — ${nombre_asm}`, html:`<div style='font-family:Arial,sans-serif;max-width:600px;margin:0 auto;padding:40px;border:1px solid #ddd'><h2 style='color:#1B3A6B;text-align:center'>PODER PARA ASAMBLEA DE COPROPIEDAD</h2><p>Yo, <strong>${nombre_prop}</strong>, propietario(a) de la unidad <strong>${nombre_unidad}</strong> (coeficiente: ${coef}) de la copropiedad <strong>${nombre_edif}</strong>, otorgo poder especial a:</p><table style='width:100%;border-collapse:collapse;margin:20px 0'><tr><td style='padding:8px;border:1px solid #ddd'><strong>Nombre</strong></td><td style='padding:8px;border:1px solid #ddd'>${nombre_delegado}</td></tr><tr><td style='padding:8px;border:1px solid #ddd'><strong>Cedula</strong></td><td style='padding:8px;border:1px solid #ddd'>${cedula_delegado}</td></tr><tr><td style='padding:8px;border:1px solid #ddd'><strong>Correo</strong></td><td style='padding:8px;border:1px solid #ddd'>${correo_delegado}</td></tr></table><p>Para que me represente en <strong>${nombre_asm}</strong> con plenas facultades.</p><p><strong>Fecha:</strong> ${fechaHoy}</p><div style='margin:40px 0;display:flex;justify-content:space-between'><div style='text-align:center;width:45%'><div style='border-top:1px solid #000;margin-top:60px;padding-top:8px'>${nombre_prop}<br><small>Propietario</small></div></div><div style='text-align:center;width:45%'><div style='border-top:1px solid #000;margin-top:60px;padding-top:8px'>${nombre_delegado}<br><small>Delegado</small></div></div></div><p style='background:#FFF9C4;padding:12px;border-radius:4px'>Enviar firmado a <strong>${correo_admin}</strong></p></div>` }) });\n} catch(e) {}\n\ntry {\n  if (p?.asambleas?.copropiedades?.email_admin) {\n    await fetch('https://api.resend.com/emails', { method:'POST', headers:{'Content-Type':'application/json','Authorization':`Bearer ${RESEND_KEY}`}, body: JSON.stringify({ from:'Asamblea360 <noreply@tu-dominio.com>', to:[correo_admin], subject:`[Accion requerida] Delegacion pendiente — ${nombre_unidad}`, html:`<p>Nueva delegacion digital pendiente:</p><ul><li><strong>Propietario:</strong> ${nombre_prop} (${nombre_unidad})</li><li><strong>Delegado:</strong> ${nombre_delegado} - CC ${cedula_delegado}</li></ul>` }) });\n  }\n} catch(e) {}\n\ntry {\n  await fetch(`${SB_URL}/rest/v1/tickets_soporte`, { method:'POST', headers:{...hdrs,'Prefer':'return=minimal'}, body: JSON.stringify({ participante_id: pid, asamblea_id: ctx.contexto?.asamblea_id, telefono: ctx.telefono.startsWith('57')?`+${ctx.telefono}`:`+57${ctx.telefono}`, motivo:'delegacion_digital_pendiente', nivel:'NORMAL', canal:'whatsapp', estado:'pendiente', creado_en: new Date().toISOString() }) });\n} catch(e) {}\n\nreturn `Documento de poder enviado a ${correo_prop}. Administrador notificado.`;"
+      },
+      "id": "n025",
+      "name": "registrar_delegacion_digital",
+      "type": "@n8n/n8n-nodes-langchain.toolCode",
+      "typeVersion": 1,
+      "position": [
+        2400,
+        928
+      ]
+    },
+    {
+      "parameters": {
+        "name": "registrar_delegacion_presencial",
+        "description": "Registra intencion de delegacion presencial. No requiere parametros.",
+        "jsCode": "const ctx = $('🧠 Cargar Contexto').first().json;\nconst SB_URL = $vars.SUPABASE_URL, SB_KEY = $vars.SUPABASE_SERVICE_KEY;\nconst hdrs = { 'apikey': SB_KEY, 'Authorization': `Bearer ${SB_KEY}`, 'Content-Type': 'application/json' };\nconst pid = ctx.contexto?.participante_id;\nawait fetch(`${SB_URL}/rest/v1/participantes_asamblea?id=eq.${pid}`, { method:'PATCH', headers: hdrs, body: JSON.stringify({ delegacion_tipo:'presencial', delegacion_estado:'pendiente_presencial' }) });\nreturn 'Delegacion presencial registrada. El delegado debe presentar poder fisico firmado el dia de la asamblea.';"
+      },
+      "id": "n026",
+      "name": "registrar_delegacion_presencial",
+      "type": "@n8n/n8n-nodes-langchain.toolCode",
+      "typeVersion": 1,
+      "position": [
+        2528,
+        928
+      ]
+    },
+    {
+      "parameters": {
+        "name": "registrar_voto",
+        "description": "Registra voto del participante. Solo usar despues de CONFIRMO explicito del usuario. Parametro: opcion_elegida (string)",
+        "jsCode": "const ctx = $('🧠 Cargar Contexto').first().json;\nconst SB_URL = $vars.SUPABASE_URL, SB_KEY = $vars.SUPABASE_SERVICE_KEY;\nconst hdrs = { 'apikey': SB_KEY, 'Authorization': `Bearer ${SB_KEY}`, 'Content-Type': 'application/json' };\nconst pid = ctx.contexto?.participante_id;\nconst pregunta_id = ctx.contexto?.pregunta_actual_id;\nconst opcion = $input.item.json.opcion_elegida;\nconst coeficiente = ctx.contexto?.coeficiente || 1;\nconst tipo_calculo = ctx.contexto?.tipo_calculo || 'coeficiente';\n\nif (!opcion) return 'Error: No se recibio la opcion de voto.';\n\nconst r1 = await fetch(`${SB_URL}/rest/v1/preguntas?id=eq.${pregunta_id}&select=estado,opciones_json`, { headers: { 'apikey': SB_KEY, 'Authorization': `Bearer ${SB_KEY}` } });\nconst [preg] = await r1.json();\nif (!preg || preg.estado !== 'Activa') return 'Error: La votacion ya cerro.';\n\nconst r2 = await fetch(`${SB_URL}/rest/v1/votos?participante_id=eq.${pid}&pregunta_id=eq.${pregunta_id}&limit=1`, { headers: { 'apikey': SB_KEY, 'Authorization': `Bearer ${SB_KEY}` } });\nconst [vEx] = await r2.json();\nif (vEx) return 'Error: Ya se registro voto para esta pregunta.';\n\nconst peso = tipo_calculo === 'coeficiente' ? parseFloat(coeficiente) : 1;\nawait fetch(`${SB_URL}/rest/v1/votos`, { method:'POST', headers:{...hdrs,'Prefer':'return=minimal'}, body: JSON.stringify({ participante_id:pid, pregunta_id, opcion, peso_voto:peso, canal:'whatsapp', fecha_voto:new Date().toISOString() }) });\nawait fetch(`${SB_URL}/rest/v1/audit_logs`, { method:'POST', headers:{...hdrs,'Prefer':'return=minimal'}, body: JSON.stringify({ accion:'voto_registrado', entidad:'votos', entidad_id:pid, participante_id:pid, asamblea_id:ctx.contexto?.asamblea_id, datos_json:{ pregunta_id, opcion, canal:'whatsapp' } }) });\n\nreturn `Voto registrado exitosamente: ${opcion}.`;"
+      },
+      "id": "n027",
+      "name": "registrar_voto",
+      "type": "@n8n/n8n-nodes-langchain.toolCode",
+      "typeVersion": 1,
+      "position": [
+        2640,
+        928
+      ]
+    },
+    {
+      "parameters": {
+        "name": "buscar_documentos",
+        "description": "Busca documentos disponibles de la asamblea. No requiere parametros.",
+        "jsCode": "const ctx = $('🧠 Cargar Contexto').first().json;\nconst SB_URL = $vars.SUPABASE_URL, SB_KEY = $vars.SUPABASE_SERVICE_KEY;\nconst asamblea_id = ctx.contexto?.asamblea_id;\nconst r1 = await fetch(`${SB_URL}/rest/v1/documentos_asamblea?asamblea_id=eq.${asamblea_id}&select=nombre,url,descripcion&order=orden`, { headers: { 'apikey': SB_KEY, 'Authorization': `Bearer ${SB_KEY}` } });\nconst docs = await r1.json();\nif (!Array.isArray(docs) || docs.length === 0) return 'No hay documentos disponibles para esta asamblea.';\nreturn 'Documentos disponibles:\\n' + docs.map(d => `- ${d.nombre}: ${d.url}`).join('\\n');"
+      },
+      "id": "n028",
+      "name": "buscar_documentos",
+      "type": "@n8n/n8n-nodes-langchain.toolCode",
+      "typeVersion": 1,
+      "position": [
+        2768,
+        928
+      ]
+    },
+    {
+      "parameters": {
+        "name": "escalar_soporte",
+        "description": "Crea ticket de soporte para atencion humana. Parametros: motivo (string), nivel (string: 'NORMAL' o 'URGENTE')",
+        "jsCode": "const ctx = $('🧠 Cargar Contexto').first().json;\nconst SB_URL = $vars.SUPABASE_URL, SB_KEY = $vars.SUPABASE_SERVICE_KEY;\nconst hdrs = { 'apikey': SB_KEY, 'Authorization': `Bearer ${SB_KEY}`, 'Content-Type': 'application/json', 'Prefer': 'return=minimal' };\nconst pid = ctx.contexto?.participante_id;\nconst telBD = ctx.telefono.startsWith('57') ? `+${ctx.telefono}` : `+57${ctx.telefono}`;\nconst motivo = $input.item.json.motivo || 'Solicitud de soporte';\nconst nivel = $input.item.json.nivel || 'NORMAL';\n\ntry {\n  await fetch(`${SB_URL}/rest/v1/tickets_soporte`, { method:'POST', headers: hdrs, body: JSON.stringify({ participante_id: pid || null, asamblea_id: ctx.contexto?.asamblea_id || null, telefono: telBD, motivo, nivel, canal:'whatsapp', estado:'pendiente', creado_en: new Date().toISOString() }) });\n} catch(e) { return 'Error creando ticket: ' + e.message; }\n\nreturn nivel === 'URGENTE' ? 'Caso urgente escalado. El equipo contactara al usuario pronto.' : 'Ticket de soporte creado. El administrador revisara el caso.';"
+      },
+      "id": "n029",
+      "name": "escalar_soporte",
+      "type": "@n8n/n8n-nodes-langchain.toolCode",
+      "typeVersion": 1,
+      "position": [
+        2880,
+        928
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ─── ENVIAR RESPUESTA WA (BAILEYS) + GUARDAR HISTORIAL ───\nconst agentOutput = $input.first().json;\nconst ctxNode = $('🧠 Cargar Contexto').first().json;\nconst BAILEYS_URL = $vars.BAILEYS_URL || 'http://localhost:3006';\nconst SB_URL = $vars.SUPABASE_URL;\nconst SB_KEY = $vars.SUPABASE_SERVICE_KEY;\nconst hdrs = { 'apikey': SB_KEY, 'Authorization': `Bearer ${SB_KEY}`, 'Content-Type': 'application/json', 'Prefer': 'return=minimal' };\n\nconst telefono = ctxNode.telefono;\nconst telBD = telefono.startsWith('webchat_') ? `+${telefono}` : (telefono.startsWith('57') ? `+${telefono}` : `+57${telefono}`);\nconst telWA = telefono.startsWith('webchat_') ? telefono : (telefono.startsWith('57') ? telefono : `57${telefono}`);\nconst jid = `${telWA}@s.whatsapp.net`;\n\n// El AI Agent devuelve el texto en output\nconst mensaje = agentOutput.output || agentOutput.text || '';\nconst texto_usuario = ctxNode.texto_usuario;\nconst participante_id = ctxNode.contexto?.participante_id || null;\nconst asamblea_id = ctxNode.contexto?.asamblea_id || null;\n\n// 1. Guardar mensaje usuario\ntry {\n  await fetch(`${SB_URL}/rest/v1/conversaciones_whatsapp`, { method:'POST', headers: hdrs, body: JSON.stringify({ telefono: telBD, rol:'user', contenido: texto_usuario, participante_id, asamblea_id }) });\n} catch(e) { console.error('Error historial user:', e.message); }\n\n// 2. Enviar respuesta por WhatsApp (Baileys) — skip si webchat\nconst es_webchat = telefono.startsWith('webchat_');\nif (mensaje && !es_webchat) {\n  try {\n    await fetch(`${BAILEYS_URL}/send`, {\n      method: 'POST',\n      headers: { 'Content-Type': 'application/json' },\n      body: JSON.stringify({ phone: jid, message: mensaje })\n    });\n  } catch(e) { console.error('Error enviando WA:', e.message); }\n}\n\n// 3. Guardar respuesta VERA\ntry {\n  await fetch(`${SB_URL}/rest/v1/conversaciones_whatsapp`, { method:'POST', headers: hdrs, body: JSON.stringify({ telefono: telBD, rol:'assistant', contenido: mensaje, participante_id, asamblea_id }) });\n} catch(e) { console.error('Error historial assistant:', e.message); }\n\nreturn [{ json: { ok: true, telefono, mensaje_enviado: !!mensaje } }];"
+      },
+      "id": "n030",
+      "name": "💬 Enviar WA + Guardar Historial",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2288,
+        512
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ─── RELEASE LOCK ───\nconst ctxNode = $('🧠 Cargar Contexto').first().json;\nconst telefono = ctxNode.telefono;\nconst SB_URL = $vars.SUPABASE_URL;\nconst SB_KEY = $vars.SUPABASE_SERVICE_KEY;\n\ntry {\n  await fetch(\n    `${SB_URL}/rest/v1/vera_locks?telefono=eq.${encodeURIComponent(telefono)}`,\n    { method: 'DELETE', headers: { 'apikey': SB_KEY, 'Authorization': `Bearer ${SB_KEY}`, 'Content-Type': 'application/json' } }\n  );\n} catch(e) { console.error('Error releasing lock:', e.message); }\n\nreturn [{ json: { lock_released: true, telefono } }];"
+      },
+      "id": "n031",
+      "name": "🔓 Release Lock",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2448,
+        512
+      ]
+    },
+    {
+      "parameters": {
+        "path": "acreditacion/confirmar-email/:email_token",
+        "responseMode": "responseNode",
+        "options": {
+          "allowedOrigins": "*"
+        }
+      },
+      "id": "n032",
+      "name": "📧 Webhook Confirmar Email",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        144,
+        1104
+      ],
+      "webhookId": "confirmar-email-v6"
+    },
+    {
+      "parameters": {
+        "jsCode": "// ─── CONFIRMAR EMAIL POR LINK (NOTIFICAR VIA BAILEYS) ───\nconst token = $input.first().json.params?.email_token || '';\nconst SB_URL = $vars.SUPABASE_URL, SB_KEY = $vars.SUPABASE_SERVICE_KEY;\nconst APP_BASE = $vars.APP_ACREDITACION_URL || 'https://tu-dominio.com';\nconst BAILEYS_URL = $vars.BAILEYS_URL || 'http://localhost:3006';\nconst hdrs = { 'apikey': SB_KEY, 'Authorization': `Bearer ${SB_KEY}`, 'Content-Type': 'application/json' };\n\nif (!token) return [{ json: { ok: false, redirect_url: `${APP_BASE}/error?msg=token_invalido` } }];\n\nconst r1 = await fetch(`${SB_URL}/rest/v1/participantes_asamblea?email_token=eq.${token}&select=id,email_confirmado,email_token_expires_at,celular_confirmado,telefono_whatsapp`, { headers: { 'apikey': SB_KEY, 'Authorization': `Bearer ${SB_KEY}` } });\nconst [p] = await r1.json();\n\nif (!p) return [{ json: { ok: false, redirect_url: `${APP_BASE}/error?msg=token_no_encontrado` } }];\nif (p.email_token_expires_at && new Date(p.email_token_expires_at) < new Date()) return [{ json: { ok: false, redirect_url: `${APP_BASE}/error?msg=token_expirado` } }];\n\nawait fetch(`${SB_URL}/rest/v1/participantes_asamblea?id=eq.${p.id}`, { method:'PATCH', headers: hdrs, body: JSON.stringify({ email_confirmado: true }) });\n\nif (p.telefono_whatsapp) {\n  const telWA = p.telefono_whatsapp.replace('+','');\n  const jid = `${telWA}@s.whatsapp.net`;\n  try {\n    await fetch(`${BAILEYS_URL}/send`, {\n      method: 'POST',\n      headers: { 'Content-Type': 'application/json' },\n      body: JSON.stringify({ phone: jid, message: 'Tu correo quedo confirmado. Ahora puedo continuar con tu acreditacion. Escribeme para seguir.' })\n    });\n  } catch(e) {}\n}\n\nconst siguiente = p.celular_confirmado ? 'GENERAR_QR' : 'CONFIRMAR_CELULAR';\nreturn [{ json: { ok: true, redirect_url: `${APP_BASE}/acreditacion/${p.id}?paso=${siguiente}&email_ok=true` } }];"
+      },
+      "id": "n033",
+      "name": "✅ Confirmar Email",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        384,
+        1104
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "redirect",
+        "redirectURL": "={{ $json.redirect_url }}",
+        "options": {}
+      },
+      "id": "n034",
+      "name": "↩️ Redirigir App",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        624,
+        1104
+      ]
+    }
+  ],
+  "connections": {
+    "Webhook WhatsApp": {
+      "main": [
+        [
+          {
+            "node": "ACK 200",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Parse Baileys",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Baileys": {
+      "main": [
+        [
+          {
+            "node": "Filtro Base",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filtro Base": {
+      "main": [
+        [
+          {
+            "node": "Skip",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "🔒 Redis Lock",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "🔒 Redis Lock": {
+      "main": [
+        [
+          {
+            "node": "❓ IF Locked",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "❓ IF Locked": {
+      "main": [
+        [
+          {
+            "node": "💬 Aviso Lock",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "🛡️ Rate Limit",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "🛡️ Rate Limit": {
+      "main": [
+        [
+          {
+            "node": "❓ IF Rate Limited",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "❓ IF Rate Limited": {
+      "main": [
+        [
+          {
+            "node": "⚠️ Aviso Rate Limit",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "🎤 Audio Check",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "🎤 Audio Check": {
+      "main": [
+        [
+          {
+            "node": "💬 Aviso Audio",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "🧠 Cargar Contexto",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "🧠 Cargar Contexto": {
+      "main": [
+        [
+          {
+            "node": "🤖 AI Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "🤖 AI Agent": {
+      "main": [
+        [
+          {
+            "node": "💬 Enviar WA + Guardar Historial",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "💬 Enviar WA + Guardar Historial": {
+      "main": [
+        [
+          {
+            "node": "🔓 Release Lock",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Groq LLM": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "🤖 AI Agent",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "PostgreSQL Memory": {
+      "ai_memory": [
+        [
+          {
+            "node": "🤖 AI Agent",
+            "type": "ai_memory",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "validar_codigo_acceso": {
+      "ai_tool": [
+        [
+          {
+            "node": "🤖 AI Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "registrar_habeas_data": {
+      "ai_tool": [
+        [
+          {
+            "node": "🤖 AI Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "actualizar_datos_participante": {
+      "ai_tool": [
+        [
+          {
+            "node": "🤖 AI Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "enviar_otp": {
+      "ai_tool": [
+        [
+          {
+            "node": "🤖 AI Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "verificar_otp": {
+      "ai_tool": [
+        [
+          {
+            "node": "🤖 AI Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "generar_qr": {
+      "ai_tool": [
+        [
+          {
+            "node": "🤖 AI Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "reenviar_qr": {
+      "ai_tool": [
+        [
+          {
+            "node": "🤖 AI Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "registrar_delegacion_digital": {
+      "ai_tool": [
+        [
+          {
+            "node": "🤖 AI Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "registrar_delegacion_presencial": {
+      "ai_tool": [
+        [
+          {
+            "node": "🤖 AI Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "registrar_voto": {
+      "ai_tool": [
+        [
+          {
+            "node": "🤖 AI Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "buscar_documentos": {
+      "ai_tool": [
+        [
+          {
+            "node": "🤖 AI Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "escalar_soporte": {
+      "ai_tool": [
+        [
+          {
+            "node": "🤖 AI Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "📧 Webhook Confirmar Email": {
+      "main": [
+        [
+          {
+            "node": "✅ Confirmar Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "✅ Confirmar Email": {
+      "main": [
+        [
+          {
+            "node": "↩️ Redirigir App",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner",
+    "availableInMCP": true
+  },
+  "staticData": null,
+  "meta": {
+    "templateCredsSetupCompleted": true
+  },
+  "pinData": {},
+  "versionId": "7f274728-98a6-4bdf-a5a7-9e59117114a1",
+  "activeVersionId": "7f274728-98a6-4bdf-a5a7-9e59117114a1",
+  "versionCounter": 12,
+  "triggerCount": 2,
+  "tags": [
+    {
+      "updatedAt": "2026-02-21T02:49:21.095Z",
+      "createdAt": "2026-02-21T02:49:21.095Z",
+      "id": "jFmKM7fAKMmlLJK9",
+      "name": "VERA"
+    },
+    {
+      "updatedAt": "2026-02-21T02:49:21.095Z",
+      "createdAt": "2026-02-21T02:49:21.095Z",
+      "id": "wZQx7j4i20w7S0AE",
+      "name": "WhatsApp"
+    },
+    {
+      "updatedAt": "2026-02-21T23:26:56.726Z",
+      "createdAt": "2026-02-21T23:26:56.726Z",
+      "id": "Uw2HIgea9SkJTnfZ",
+      "name": "v6"
+    },
+    {
+      "updatedAt": "2026-02-21T23:26:56.726Z",
+      "createdAt": "2026-02-21T23:26:56.726Z",
+      "id": "l83HaqbiEmn4f7ro",
+      "name": "AI-Agent"
+    }
+  ],
+  "shared": [
+    {
+      "updatedAt": "2026-02-21T23:26:56.726Z",
+      "createdAt": "2026-02-21T23:26:56.726Z",
+      "role": "workflow:owner",
+      "workflowId": "GTpxmCLOJPbE7DYK",
+      "projectId": "zosfEZasQZa6UYIM",
+      "project": {
+        "updatedAt": "2026-02-11T00:30:28.530Z",
+        "createdAt": "2026-02-10T17:46:09.161Z",
+        "id": "zosfEZasQZa6UYIM",
+        "name": "Administrador admin@tu-dominio.com <tu-email@ejemplo.com>",
+        "type": "personal",
+        "icon": null,
+        "description": null,
+        "creatorId": "772ad629-c27f-4705-b5fc-5b2b2f3a4d48"
+      }
+    }
+  ]
+}

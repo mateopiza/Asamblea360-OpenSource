@@ -1,0 +1,3 @@
+# Supabase Configuration
+# Reemplaza con tu project_id de Supabase
+project_id = "tu-project-id"

@@ -1,0 +1,480 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>VERA V6 - Chat de Pruebas</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg-primary: #0b141a;
+    --bg-secondary: #111b21;
+    --bg-header: #1f2c33;
+    --bg-input-area: #1f2c33;
+    --bg-user-bubble: #005c4b;
+    --bg-vera-bubble: #1f2c33;
+    --text-primary: #e9edef;
+    --text-secondary: #8696a0;
+    --text-timestamp: #8696a0;
+    --accent-green: #00a884;
+    --accent-green-dim: #025144;
+    --border-color: #2a3942;
+    --input-bg: #2a3942;
+    --input-focus: #3b4f58;
+    --scrollbar-thumb: #374045;
+    --danger: #ea4335;
+  }
+
+  html, body {
+    height: 100%;
+    font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, 'Helvetica Neue', Arial, sans-serif;
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    overflow: hidden;
+  }
+
+  .app {
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+    max-width: 900px;
+    margin: 0 auto;
+    background: var(--bg-secondary);
+    position: relative;
+  }
+
+  /* Header */
+  .header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 16px;
+    background: var(--bg-header);
+    border-bottom: 1px solid var(--border-color);
+    flex-shrink: 0;
+    z-index: 10;
+  }
+
+  .header-avatar {
+    width: 40px;
+    height: 40px;
+    border-radius: 50%;
+    background: var(--accent-green-dim);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 18px;
+    font-weight: 700;
+    color: var(--accent-green);
+    flex-shrink: 0;
+  }
+
+  .header-info {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .header-title {
+    font-size: 16px;
+    font-weight: 600;
+    color: var(--text-primary);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .status-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--accent-green);
+    display: inline-block;
+    animation: pulse 2s ease-in-out infinite;
+  }
+
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.4; }
+  }
+
+  .header-subtitle {
+    font-size: 12px;
+    color: var(--text-secondary);
+    margin-top: 1px;
+  }
+
+  /* Config bar */
+  .config-bar {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 12px 16px;
+    background: var(--bg-primary);
+    border-bottom: 1px solid var(--border-color);
+    flex-shrink: 0;
+  }
+
+  .config-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .config-bar label {
+    flex-shrink: 0;
+    font-weight: 500;
+    font-size: 12px;
+    color: var(--text-secondary);
+    min-width: 100px;
+  }
+
+  .config-bar input {
+    flex: 1;
+    background: var(--input-bg);
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    padding: 6px 10px;
+    color: var(--text-primary);
+    font-size: 12px;
+    font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+    outline: none;
+    transition: border-color 0.2s;
+  }
+
+  .config-bar input:focus {
+    border-color: var(--accent-green);
+  }
+
+  .btn-save {
+    background: var(--accent-green);
+    border: none;
+    color: #000;
+    padding: 6px 16px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 12px;
+    font-weight: 600;
+    transition: opacity 0.2s;
+  }
+
+  .btn-save:hover {
+    opacity: 0.9;
+  }
+
+  /* Messages */
+  .messages {
+    flex: 1;
+    overflow-y: auto;
+    padding: 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .message {
+    max-width: 80%;
+    padding: 8px 12px;
+    border-radius: 8px;
+    font-size: 14px;
+    line-height: 1.4;
+    animation: fadeIn 0.2s ease-out;
+    word-wrap: break-word;
+  }
+
+  @keyframes fadeIn {
+    from { opacity: 0; transform: translateY(10px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+
+  .message.user {
+    align-self: flex-end;
+    background: var(--bg-user-bubble);
+    color: var(--text-primary);
+    border-bottom-right-radius: 2px;
+  }
+
+  .message.vera {
+    align-self: flex-start;
+    background: var(--bg-vera-bubble);
+    color: var(--text-primary);
+    border-bottom-left-radius: 2px;
+  }
+
+  .message.system {
+    align-self: center;
+    background: rgba(233, 237, 239, 0.1);
+    color: var(--text-secondary);
+    font-size: 12px;
+    padding: 6px 12px;
+  }
+
+  .message-time {
+    font-size: 11px;
+    color: var(--text-timestamp);
+    margin-top: 4px;
+    text-align: right;
+  }
+
+  /* Input area */
+  .input-area {
+    display: flex;
+    align-items: flex-end;
+    gap: 8px;
+    padding: 10px 16px;
+    background: var(--bg-input-area);
+    border-top: 1px solid var(--border-color);
+    flex-shrink: 0;
+  }
+
+  .message-input {
+    flex: 1;
+    background: var(--input-bg);
+    border: 1px solid var(--border-color);
+    border-radius: 20px;
+    padding: 10px 16px;
+    color: var(--text-primary);
+    font-size: 15px;
+    resize: none;
+    outline: none;
+    max-height: 120px;
+    font-family: inherit;
+  }
+
+  .message-input:focus {
+    border-color: var(--accent-green);
+  }
+
+  .btn-send {
+    width: 44px;
+    height: 44px;
+    border-radius: 50%;
+    background: var(--accent-green);
+    border: none;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    transition: opacity 0.2s;
+    flex-shrink: 0;
+  }
+
+  .btn-send:hover {
+    opacity: 0.9;
+  }
+
+  .btn-send svg {
+    width: 20px;
+    height: 20px;
+    fill: #000;
+  }
+
+  /* Typing indicator */
+  .typing {
+    display: none;
+    align-self: flex-start;
+    background: var(--bg-vera-bubble);
+    padding: 12px 16px;
+    border-radius: 8px;
+    border-bottom-left-radius: 2px;
+  }
+
+  .typing.active {
+    display: flex;
+    gap: 4px;
+  }
+
+  .typing-dot {
+    width: 8px;
+    height: 8px;
+    background: var(--text-secondary);
+    border-radius: 50%;
+    animation: typingBounce 1.4s infinite ease-in-out both;
+  }
+
+  .typing-dot:nth-child(1) { animation-delay: -0.32s; }
+  .typing-dot:nth-child(2) { animation-delay: -0.16s; }
+
+  @keyframes typingBounce {
+    0%, 80%, 100% { transform: scale(0); }
+    40% { transform: scale(1); }
+  }
+
+  /* Scrollbar */
+  .messages::-webkit-scrollbar {
+    width: 6px;
+  }
+
+  .messages::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  .messages::-webkit-scrollbar-thumb {
+    background: var(--scrollbar-thumb);
+    border-radius: 3px;
+  }
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="header">
+    <div class="header-avatar">V</div>
+    <div class="header-info">
+      <div class="header-title">
+        VERA v6
+        <span class="status-dot"></span>
+      </div>
+      <div class="header-subtitle">Asistente Virtual de Asambleas</div>
+    </div>
+  </div>
+
+  <div class="config-bar">
+    <div class="config-row">
+      <label>Webhook URL:</label>
+      <input type="text" id="webhookUrl" placeholder="http://localhost:5678/webhook/vera/whatsapp" value="">
+    </div>
+    <div class="config-row">
+      <label>Supabase Key:</label>
+      <input type="password" id="supabaseKey" placeholder="your-supabase-key" value="">
+      <button class="btn-save" onclick="saveConfig()">Guardar</button>
+    </div>
+  </div>
+
+  <div class="messages" id="messages"></div>
+
+  <div class="typing" id="typing">
+    <div class="typing-dot"></div>
+    <div class="typing-dot"></div>
+    <div class="typing-dot"></div>
+  </div>
+
+  <div class="input-area">
+    <textarea class="message-input" id="messageInput" placeholder="Escribe un mensaje..." rows="1"></textarea>
+    <button class="btn-send" onclick="sendMessage()">
+      <svg viewBox="0 0 24 24"><path d="M2 21l21-9L2 3v7l15 2-15 2v7z"/></svg>
+    </button>
+  </div>
+</div>
+
+<script>
+  // ===============================
+  // CONFIGURACIÓN - EDITAR ESTOS VALORES
+  // ===============================
+  // Lee de localStorage o usa valores por defecto
+  const WEBHOOK_URL = localStorage.getItem('vera_webhook_url') || 'http://localhost:5678/webhook/vera/whatsapp';
+  const SUPABASE_KEY = localStorage.getItem('vera_supabase_key') || '';
+  
+  // Session ID único para este chat
+  const SESSION_ID = localStorage.getItem('vera_session_id') || 'webchat_' + Math.random().toString(36).substring(2, 15);
+  localStorage.setItem('vera_session_id', SESSION_ID);
+  
+  // Cargar configuración en los inputs
+  document.getElementById('webhookUrl').value = WEBHOOK_URL;
+  document.getElementById('supabaseKey').value = SUPABASE_KEY;
+
+  function saveConfig() {
+    localStorage.setItem('vera_webhook_url', document.getElementById('webhookUrl').value);
+    localStorage.setItem('vera_supabase_key', document.getElementById('supabaseKey').value);
+    alert('Configuración guardada');
+  }
+
+  const messagesContainer = document.getElementById('messages');
+  const messageInput = document.getElementById('messageInput');
+  const typing = document.getElementById('typing');
+
+  // Auto-resize textarea
+  messageInput.addEventListener('input', function() {
+    this.style.height = 'auto';
+    this.style.height = Math.min(this.scrollHeight, 120) + 'px';
+  });
+
+  messageInput.addEventListener('keydown', function(e) {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      sendMessage();
+    }
+  });
+
+  function addMessage(text, sender) {
+    const div = document.createElement('div');
+    div.className = `message ${sender}`;
+    
+    const time = new Date().toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit' });
+    
+    div.innerHTML = `
+      ${escapeHtml(text)}
+      <div class="message-time">${time}</div>
+    `;
+    
+    messagesContainer.appendChild(div);
+    messagesContainer.scrollTop = messagesContainer.scrollHeight;
+  }
+
+  function escapeHtml(text) {
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+  }
+
+  function setTyping(active) {
+    typing.classList.toggle('active', active);
+    if (active) {
+      messagesContainer.parentNode.insertBefore(typing, messagesContainer.nextSibling);
+    }
+  }
+
+  async function sendMessage() {
+    const text = messageInput.value.trim();
+    if (!text) return;
+
+    // Agregar mensaje del usuario
+    addMessage(text, 'user');
+    messageInput.value = '';
+    messageInput.style.height = 'auto';
+
+    // Mostrar typing
+    setTyping(true);
+
+    try {
+      const payload = {
+        messages: [{
+          key: {
+            remoteJid: `${SESSION_ID}@s.whatsapp.net`
+          },
+          message: {
+            conversation: text
+          }
+        }]
+      };
+
+      const response = await fetch(localStorage.getItem('vera_webhook_url') || WEBHOOK_URL, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(payload)
+      });
+
+      if (!response.ok) {
+        throw new Error('Error en el servidor');
+      }
+
+      // La respuesta de VERA se procesa vía polling o webhook separado
+      // Por ahora simulamos espera
+      setTimeout(() => {
+        setTyping(false);
+        // Nota: En una implementación real, esto vendría del webhook de respuesta
+        addMessage('Mensaje recibido. Configura el webhook de respuesta para ver la respuesta de VERA.', 'vera');
+      }, 1000);
+
+    } catch (error) {
+      setTyping(false);
+      addMessage('Error: ' + error.message, 'system');
+    }
+  }
+
+  // Mensaje inicial
+  addMessage('👋 ¡Hola! Soy VERA. Configura el webhook arriba y comienza a chatear.', 'vera');
+</script>
+</body>
+</html>

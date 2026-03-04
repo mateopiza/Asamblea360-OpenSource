@@ -1,0 +1,40 @@
+# ===========================================
+# Baileys - WhatsApp Gateway
+# ===========================================
+
+# ⚠️ NUNCA subir credenciales de WhatsApp
+# Estos archivos contienen las claves de autenticación
+
+# Directorios de autenticación
+auth_info/
+auth_info_baileys/
+sessions/
+session-*/
+
+# Archivos de credenciales
+creds.json
+baileys_auth.json
+
+# Archivos de estado de sincronización
+app-state-sync-key-*.json
+pre-key-*.json
+sender-key-*.json
+session-*.json
+
+# Store de Baileys
+baileys_store.json
+*.store.json
+
+# Logs de sesión
+logs/
+*.log
+
+# Archivos temporales
+temp/
+tmp/
+*.tmp
+
+# QR codes generados (si se guardan)
+qr-*.png
+qr-*.jpg
+whatsapp-qr.*

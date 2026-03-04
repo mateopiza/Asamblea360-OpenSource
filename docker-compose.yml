@@ -1,0 +1,136 @@
+version: '3.8'
+
+services:
+  # PostgreSQL para persistencia de datos y memoria de chat
+  postgres:
+    image: postgres:15-alpine
+    container_name: vera-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-vera}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-vera123}
+      POSTGRES_DB: ${POSTGRES_DB:-vera_db}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER:-vera} -d ${POSTGRES_DB:-vera_db}']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - vera-network
+
+  # Redis para locks y rate limiting
+  redis:
+    image: redis:7-alpine
+    container_name: vera-redis
+    restart: unless-stopped
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - vera-network
+
+  # n8n con Queue Mode para VERA
+  n8n:
+    image: n8nio/n8n:latest
+    container_name: vera-n8n
+    restart: unless-stopped
+    ports:
+      - "${N8N_PORT:-5678}:5678"
+    environment:
+      # Database
+      - DB_TYPE=postgresdb
+      - DB_POSTGRESDB_HOST=postgres
+      - DB_POSTGRESDB_PORT=5432
+      - DB_POSTGRESDB_DATABASE=${POSTGRES_USER:-vera}
+      - DB_POSTGRESDB_USER=${POSTGRES_USER:-vera}
+      - DB_POSTGRESDB_PASSWORD=${POSTGRES_PASSWORD:-vera123}
+      
+      # Redis Queue Mode
+      - EXECUTIONS_MODE=queue
+      - QUEUE_BULL_REDIS_HOST=redis
+      - QUEUE_BULL_REDIS_PORT=6379
+      
+      # General
+      - N8N_ENCRYPTION_KEY=${N8N_ENCRYPTION_KEY:-change-me-in-production}
+      - N8N_HOST=${N8N_HOST:-localhost}
+      - N8N_PORT=5678
+      - WEBHOOK_URL=${N8N_WEBHOOK_URL:-http://localhost:5678}
+      - GENERIC_TIMEZONE=${TZ:-America/Bogota}
+      
+      # Security
+      - N8N_BASIC_AUTH_ACTIVE=true
+      - N8N_BASIC_AUTH_USER=${N8N_USER:-admin}
+      - N8N_BASIC_AUTH_PASSWORD=${N8N_PASSWORD:-password}
+      
+      # Variables personalizadas para VERA
+      - SUPABASE_URL=${SUPABASE_URL}
+      - SUPABASE_SERVICE_KEY=${SUPABASE_SERVICE_KEY}
+      - BAILEYS_URL=${BAILEYS_URL:-http://baileys:3006}
+      - N8N_WEBHOOK_BASE=${N8N_WEBHOOK_BASE}
+      - APP_QR_BASE=${APP_QR_BASE}
+      - APP_ACREDITACION_URL=${APP_ACREDITACION_URL}
+      - RESEND_API_KEY=${RESEND_API_KEY}
+    volumes:
+      - n8n_data:/home/node/.n8n
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - vera-network
+
+  # Baileys - WhatsApp Gateway
+  baileys:
+    build:
+      context: ./baileys
+      dockerfile: Dockerfile
+    container_name: vera-baileys
+    restart: unless-stopped
+    ports:
+      - "${BAILEYS_PORT:-3006}:3006"
+    environment:
+      - WEBHOOK_URL=${BAILEYS_WEBHOOK_URL:-http://n8n:5678/webhook/vera/whatsapp}
+      - PORT=3006
+    volumes:
+      - baileys_auth:/app/auth
+    depends_on:
+      - n8n
+    networks:
+      - vera-network
+
+  # Web App - React Frontend (Opcional, también puede correrse standalone)
+  web-app:
+    build:
+      context: ./web-app
+      dockerfile: Dockerfile
+    container_name: vera-web-app
+    restart: unless-stopped
+    ports:
+      - "${WEB_APP_PORT:-3000}:80"
+    environment:
+      - VITE_SUPABASE_URL=${VITE_SUPABASE_URL}
+      - VITE_SUPABASE_PUBLISHABLE_KEY=${VITE_SUPABASE_PUBLISHABLE_KEY}
+      - VITE_SUPABASE_PROJECT_ID=${VITE_SUPABASE_PROJECT_ID}
+    depends_on:
+      - n8n
+    networks:
+      - vera-network
+    profiles:
+      - web
+
+volumes:
+  postgres_data:
+  redis_data:
+  n8n_data:
+  baileys_auth:
+
+networks:
+  vera-network:
+    driver: bridge

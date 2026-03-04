@@ -1,0 +1,109 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;600;700&family=Roboto:wght@400;500;700;900&display=swap');
+
+@layer base {
+  :root {
+    --background: 214 25% 97%;
+    --foreground: 222 47% 11%;
+
+    --card: 0 0% 100%;
+    --card-foreground: 222 47% 11%;
+
+    --popover: 0 0% 100%;
+    --popover-foreground: 222 47% 11%;
+
+    --primary: 197 79% 36%;
+    --primary-foreground: 0 0% 100%;
+
+    --secondary: 214 20% 93%;
+    --secondary-foreground: 222 47% 11%;
+
+    --muted: 214 20% 93%;
+    --muted-foreground: 215 14% 46%;
+
+    --accent: 197 79% 93%;
+    --accent-foreground: 197 79% 30%;
+
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 100%;
+
+    --success: 130 52% 53%;
+    --success-foreground: 0 0% 100%;
+
+    --warning: 38 92% 50%;
+    --warning-foreground: 0 0% 100%;
+
+    --border: 214 20% 89%;
+    --input: 214 20% 89%;
+    --ring: 197 79% 36%;
+
+    --radius: 0.75rem;
+
+    --sidebar-background: 213 48% 18%;
+    --sidebar-foreground: 214 20% 93%;
+    --sidebar-primary: 197 79% 45%;
+    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-accent: 213 40% 24%;
+    --sidebar-accent-foreground: 214 20% 93%;
+    --sidebar-border: 213 40% 24%;
+    --sidebar-ring: 197 79% 36%;
+  }
+
+  .dark {
+    --background: 213 48% 8%;
+    --foreground: 214 20% 93%;
+
+    --card: 213 40% 12%;
+    --card-foreground: 214 20% 93%;
+
+    --popover: 213 40% 12%;
+    --popover-foreground: 214 20% 93%;
+
+    --primary: 197 79% 45%;
+    --primary-foreground: 0 0% 100%;
+
+    --secondary: 213 40% 18%;
+    --secondary-foreground: 214 20% 93%;
+
+    --muted: 213 40% 18%;
+    --muted-foreground: 215 14% 55%;
+
+    --accent: 197 50% 20%;
+    --accent-foreground: 197 79% 80%;
+
+    --destructive: 0 62% 30%;
+    --destructive-foreground: 0 0% 100%;
+
+    --border: 213 40% 20%;
+    --input: 213 40% 20%;
+    --ring: 197 79% 45%;
+
+    --sidebar-background: 213 48% 6%;
+    --sidebar-foreground: 214 20% 85%;
+    --sidebar-primary: 197 79% 45%;
+    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-accent: 213 40% 14%;
+    --sidebar-accent-foreground: 214 20% 85%;
+    --sidebar-border: 213 40% 14%;
+    --sidebar-ring: 197 79% 45%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-background text-foreground;
+    font-family: 'Montserrat', sans-serif;
+  }
+
+  h1, h2, h3, h4, h5, h6 {
+    font-family: 'Roboto', sans-serif;
+    font-weight: 900;
+  }
+}
